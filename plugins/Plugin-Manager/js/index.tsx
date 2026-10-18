@@ -42,11 +42,12 @@ import {
 	formatVersion,
 	getPluginContributorName,
 } from '@revenge-mod/plugins/utils'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Component, useCallback, useEffect, useMemo, useState } from 'react'
 import { Image, ScrollView, View } from 'react-native'
 import type { SettingsItem } from '@revenge-mod/discord/modules/settings'
 import type { JsonStorage } from '@revenge-mod/json-storage'
 import type { AnyPlugin } from '@revenge-mod/plugins/_'
+import type { ReactNode } from 'react'
 import type {
 	InstallPlan,
 	PluginUpdate,
@@ -84,7 +85,7 @@ const INTERVALS = [
 	{ label: '1 hour', min: 60 },
 ]
 
-const DEFAULTS: Settings = { autoCheck: true, intervalMin: 1 }
+const DEFAULTS: Settings = { autoCheck: true, intervalMin: 15 }
 
 /** Fills in defaults and ignores an interval that isn't one of the choices. */
 function readSettings(raw?: Partial<Settings> | null): Settings {
@@ -1126,6 +1127,120 @@ function SettingsTab({ storage }: { storage: JsonStorage<Settings> }) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Revenge internals check                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * This plugin uses Revenge's plugin internals, which are not a public API and can change
+ * between versions. Returns the names of any that are missing, so we can say so clearly
+ * instead of crashing.
+ */
+function missingInternals(): string[] {
+	const things: Record<string, unknown> = {
+		pList,
+		pEmitter,
+		enablePluginInActiveSlot,
+		disablePluginInActiveSlot,
+		uninstallExternalPlugin,
+		installFromRepo,
+		listRepoPlugins,
+		listRepos,
+		listUpdates,
+		planInstall,
+		refreshAllRepos,
+		refreshRepo,
+		selectSafeUpdates,
+		setRepos,
+		updatePlugins,
+	}
+
+	const missing: string[] = []
+	for (const name in things) {
+		try {
+			if (things[name] == null) missing.push(name)
+		} catch {
+			missing.push(name)
+		}
+	}
+	return missing
+}
+
+/** Shows what went wrong instead of letting one bad render crash the whole screen. */
+class ErrorBoundary extends Component<
+	{ children?: ReactNode },
+	{ error?: unknown }
+> {
+	state: { error?: unknown } = {}
+
+	static getDerivedStateFromError(error: unknown) {
+		return { error }
+	}
+
+	componentDidCatch(error: unknown) {
+		log('The screen crashed:', String(error))
+	}
+
+	render() {
+		if (this.state.error === undefined) return this.props.children
+
+		const { Button, Stack, Text } = Design
+		const e = this.state.error
+		return (
+			<Page>
+				<Stack spacing={12}>
+					<Text variant="heading-md/semibold">
+						Plugin Browser hit a problem
+					</Text>
+					<Text variant="text-sm/medium" color="text-muted" selectable>
+						{e instanceof Error ? e.message : String(e)}
+					</Text>
+					<Button
+						text="Try again"
+						variant="secondary"
+						size="sm"
+						onPress={() => this.setState({ error: undefined })}
+					/>
+				</Stack>
+			</Page>
+		)
+	}
+}
+
+/** The screen, protected from crashes and from a Revenge build it doesn't match. */
+function PluginManagerScreen(props: {
+	plugin?: AnyPlugin
+	storage?: JsonStorage<Settings>
+}) {
+	const { Stack, Text } = Design
+	const missing = useMemo(missingInternals, [])
+
+	if (missing.length) {
+		return (
+			<Page>
+				<Stack spacing={12}>
+					<Text variant="heading-md/semibold">
+						This Revenge build isn't supported
+					</Text>
+					<Text variant="text-sm/medium" color="text-muted">
+						Plugin Browser relies on parts of Revenge that have changed, so it
+						is paused. Update Plugin Browser, or Revenge, and try again.
+					</Text>
+					<Text variant="text-sm/medium" color="text-muted" selectable>
+						Missing: {missing.join(', ')}
+					</Text>
+				</Stack>
+			</Page>
+		)
+	}
+
+	return (
+		<ErrorBoundary>
+			<PluginManager {...props} />
+		</ErrorBoundary>
+	)
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Screen                                                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -1428,7 +1543,7 @@ let selfPlugin: AnyPlugin | undefined
 let selfStorage: JsonStorage<Settings> | undefined
 
 function PluginBrowserScreen() {
-	return <PluginManager plugin={selfPlugin} storage={selfStorage} />
+	return <PluginManagerScreen plugin={selfPlugin} storage={selfStorage} />
 }
 
 const PluginBrowserSetting: SettingsItem = {
@@ -1471,7 +1586,15 @@ export default plugin({
 		selfPlugin = self as unknown as AnyPlugin
 		selfStorage = jsonStorage as unknown as JsonStorage<Settings>
 
-		cleanup(startUpdateChecker(selfStorage))
+		const missing = missingInternals()
+		if (missing.length) {
+			// Don't start anything that would call what's missing. The screen explains why.
+			logger.warn(
+				`Revenge's plugin internals changed (missing: ${missing.join(', ')}). Update checks are paused.`,
+			)
+		} else {
+			cleanup(startUpdateChecker(selfStorage))
+		}
 
 		// Registered once Discord's settings are ready, to keep startup fast.
 		cleanup(
@@ -1483,7 +1606,7 @@ export default plugin({
 
 	SettingsComponent({ api }) {
 		return (
-			<PluginManager
+			<PluginManagerScreen
 				plugin={api?.plugin as unknown as AnyPlugin | undefined}
 				storage={api?.jsonStorage as unknown as JsonStorage<Settings>}
 			/>
