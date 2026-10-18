@@ -1,4 +1,5 @@
 import { Design } from '@revenge-mod/discord/design'
+import { Stores } from '@revenge-mod/discord/flux'
 import { callNativeMethod } from '@revenge-mod/modules/native'
 import { useEffect, useState } from 'react'
 import { Alert, AppState, ScrollView } from 'react-native'
@@ -23,6 +24,9 @@ interface GhostPing {
 	kind: string
 	how: 'deleted' | 'edited'
 	at: number
+	/** Which server it happened in. Needs Message Logger 1.7 or newer. */
+	guildId?: string
+	channelId?: string
 }
 
 interface MessageLoggerApi {
@@ -37,7 +41,7 @@ interface MessageLoggerApi {
 declare module '@revenge-mod/modules/native' {
 	export interface NativeMethods {
 		'evantanner.ghost-ping-notifications.notify': [
-			[title: string, body: string],
+			[title: string, body: string, hideOnLockScreen: string],
 			string,
 		]
 		'evantanner.ghost-ping-notifications.status': [[], string]
@@ -45,8 +49,12 @@ declare module '@revenge-mod/modules/native' {
 	}
 }
 
-const notifyNative = (title: string, body: string) =>
-	callNativeMethod('evantanner.ghost-ping-notifications.notify', [title, body])
+const notifyNative = (title: string, body: string, hideOnLockScreen: boolean) =>
+	callNativeMethod('evantanner.ghost-ping-notifications.notify', [
+		title,
+		body,
+		hideOnLockScreen ? '1' : '0',
+	])
 const statusNative = () =>
 	callNativeMethod('evantanner.ghost-ping-notifications.status', [])
 const requestPermissionNative = () =>
@@ -60,14 +68,60 @@ interface Settings {
 	enabled: boolean
 	/** Skip the notification while Discord is open, since Message Logger already shows an alert. */
 	onlyInBackground: boolean
-	/** Include the message text. It is visible on the lock screen. */
+	/** Include the message text in the notification. */
 	showText: boolean
+	/** On the lock screen, show only "Ghost ping" until the phone is unlocked. */
+	hideOnLockScreen: boolean
+	/** JSON array of server ids that never send a notification. */
+	mutedGuilds: string
 }
 
 const DEFAULTS: Settings = {
 	enabled: true,
 	onlyInBackground: true,
 	showText: true,
+	hideOnLockScreen: true,
+	mutedGuilds: '[]',
+}
+
+function parseMuted(raw: string): string[] {
+	try {
+		const parsed = JSON.parse(raw)
+		return Array.isArray(parsed)
+			? parsed.filter((x): x is string => typeof x === 'string')
+			: []
+	} catch {
+		return []
+	}
+}
+
+/** Servers you are in whose name contains the text. */
+function searchGuilds(query: string): { id: string; name: string }[] {
+	const q = query.trim().toLowerCase()
+	if (!q) return []
+	try {
+		const guilds: Record<string, any> =
+			(Stores as any).GuildStore?.getGuilds?.() ?? {}
+		return Object.values(guilds)
+			.filter(g =>
+				String(g?.name ?? '')
+					.toLowerCase()
+					.includes(q),
+			)
+			.map(g => ({ id: String(g.id), name: String(g.name) }))
+			.sort((a, b) => a.name.localeCompare(b.name))
+			.slice(0, 10)
+	} catch {
+		return []
+	}
+}
+
+function guildName(id: string): string {
+	try {
+		return (Stores as any).GuildStore?.getGuild?.(id)?.name ?? id
+	} catch {
+		return id
+	}
 }
 
 function compose(ping: GhostPing, showText: boolean) {
@@ -89,7 +143,15 @@ export default plugin({
 	jsonStorage: { load: true, default: DEFAULTS },
 
 	SettingsComponent({ api }) {
-		const { Button, Stack, Text, TableRowGroup, TableSwitchRow } = Design
+		const {
+			Button,
+			Stack,
+			Text,
+			TextInput,
+			TableRow,
+			TableRowGroup,
+			TableSwitchRow,
+		} = Design
 		const storage = api.jsonStorage as unknown as JsonStorage<Settings>
 		const s: Settings = { ...DEFAULTS, ...(storage.use() ?? {}) }
 
@@ -98,6 +160,12 @@ export default plugin({
 			{ enabled: boolean; sdk: number } | null | undefined
 		>()
 		const [refreshKey, setRefreshKey] = useState(0)
+
+		const [serverQuery, setServerQuery] = useState('')
+		const serverResults = searchGuilds(serverQuery)
+		const muted = parseMuted(s.mutedGuilds)
+		const setMuted = (next: string[]) =>
+			storage.set({ mutedGuilds: JSON.stringify(next) })
 
 		useEffect(() => {
 			let alive = true
@@ -130,6 +198,7 @@ export default plugin({
 				const result = await notifyNative(
 					'Ghost ping from Example',
 					'pinged you in Example Server · #general and then deleted the message.',
+					s.hideOnLockScreen,
 				)
 				if (result !== 'shown')
 					Alert.alert("Couldn't send the notification", result)
@@ -155,11 +224,66 @@ export default plugin({
 					/>
 					<TableSwitchRow
 						label="Show the message text"
-						subLabel="The text is visible on the lock screen"
+						subLabel="Turn off to only say who pinged you and where"
 						value={s.showText}
 						onValueChange={(v: boolean) => storage.set({ showText: v })}
 					/>
+					<TableSwitchRow
+						label="Hide details on the lock screen"
+						subLabel="Shows only “Ghost ping” until you unlock your phone"
+						value={s.hideOnLockScreen}
+						onValueChange={(v: boolean) =>
+							storage.set({ hideOnLockScreen: v })
+						}
+					/>
 				</TableRowGroup>
+
+				<TableRowGroup title="Muted servers">
+					<TextInput
+						label="Find a server to mute"
+						size="md"
+						placeholder="Server name"
+						value={serverQuery}
+						onChange={(v: string) => setServerQuery(v)}
+					/>
+				</TableRowGroup>
+
+				{serverQuery.trim() && !serverResults.length ? (
+					<Text variant="text-sm/medium">No server with that name.</Text>
+				) : null}
+
+				{serverResults.length ? (
+					<TableRowGroup title="Matching servers">
+						{serverResults.map(g => (
+							<TableRow
+								key={g.id}
+								label={g.name}
+								subLabel={muted.includes(g.id) ? 'Already muted' : 'Tap to mute'}
+								onPress={() => {
+									if (!muted.includes(g.id)) setMuted([...muted, g.id])
+								}}
+							/>
+						))}
+					</TableRowGroup>
+				) : null}
+
+				{muted.length ? (
+					<TableRowGroup title={`Muted (${muted.length}), tap to unmute`}>
+						{muted.map(id => (
+							<TableRow
+								key={id}
+								label={guildName(id)}
+								subLabel={id}
+								onPress={() => setMuted(muted.filter(m => m !== id))}
+							/>
+						))}
+					</TableRowGroup>
+				) : (
+					<Text variant="text-sm/medium">
+						Muted servers don't send a notification. Ghost pings there still
+						appear in Message Logger. Needs Message Logger 1.7 or newer.
+					</Text>
+				)}
 
 				<Stack spacing={8}>
 					<Text variant="text-md/semibold">Permission</Text>
@@ -224,11 +348,13 @@ export default plugin({
 				try {
 					const s = getSettings()
 					if (!s.enabled) return
+					if (ping.guildId && parseMuted(s.mutedGuilds).includes(ping.guildId))
+						return
 					// While Discord is open, Message Logger's own alert is already showing.
 					if (s.onlyInBackground && AppState.currentState === 'active') return
 
 					const { title, body } = compose(ping, s.showText)
-					notifyNative(title, body)
+					notifyNative(title, body, s.hideOnLockScreen)
 						.then(result => {
 							if (result !== 'shown')
 								logger?.warn('Notification not shown:', result)
