@@ -3,8 +3,8 @@
 	"id": "evantanner.message-logger",
 	"name": "Message Logger",
 	"description": "Keeps deleted messages on screen in red, shows what edited messages said before, saves a log with attachments and export, warns you about ghost pings, and shares them with other plugins.",
-	"author": "Evan Tanner",
-	"version": "1.6.1",
+	"author": "Evan Tanner (https://github.com/EvanTannermeta \"GitHub\")",
+	"version": "1.7.0",
 	"dependencies": {
 		"revenge.api": {
 			"version": ">=1 <2"
