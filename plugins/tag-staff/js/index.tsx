@@ -97,7 +97,11 @@ function getRoles(
 	return guild?.roles
 }
 
-function isAdmin(guildId: string, userId: string, tagOwner: boolean): boolean {
+function computeIsAdmin(
+	guildId: string,
+	userId: string,
+	tagOwner: boolean,
+): boolean {
 	try {
 		const s = Stores as any
 		const guild = s.GuildStore?.getGuild?.(guildId)
@@ -126,6 +130,28 @@ function isAdmin(guildId: string, userId: string, tagOwner: boolean): boolean {
 		warnOnce('admin-check', 'Admin check failed:', String(e))
 	}
 	return false
+}
+
+// This runs for every message that is drawn, and each check goes through a user's roles with
+// BigInt math, so answers are remembered for a short while. A "no" is remembered for less
+// time, because it may just mean the member or roles hadn't loaded yet.
+const ADMIN_YES_MS = 30_000
+const ADMIN_NO_MS = 5_000
+const ADMIN_CACHE_MAX = 2000
+const adminCache = new Map<string, { value: boolean; at: number }>()
+
+function isAdmin(guildId: string, userId: string, tagOwner: boolean): boolean {
+	const key = `${guildId}:${userId}:${tagOwner ? 1 : 0}`
+	const now = Date.now()
+
+	const hit = adminCache.get(key)
+	if (hit && now - hit.at < (hit.value ? ADMIN_YES_MS : ADMIN_NO_MS))
+		return hit.value
+
+	const value = computeIsAdmin(guildId, userId, tagOwner)
+	if (adminCache.size >= ADMIN_CACHE_MAX) adminCache.clear()
+	adminCache.set(key, { value, at: now })
+	return value
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +548,8 @@ export default plugin({
 			...DEFAULTS,
 			...(storage.cache ?? {}),
 		})
+
+		cleanup(() => adminCache.clear())
 
 		log('Step 2: looking for the chat row manager')
 		cleanup(
