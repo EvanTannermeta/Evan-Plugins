@@ -42,10 +42,10 @@
     "evantanner.ghost-ping-notifications": {
       "name": "Ghost Ping Notifications",
       "description": "Sends an Android notification when someone pings you and then deletes the message. Needs Message Logger.",
-      "author": "Evan Tanner",
+      "author": "Evan Tanner (https://github.com/EvanTannermeta \"GitHub\")",
       "icon": "BellIcon",
       "channels": {
-        "latest": "1.0.1"
+        "latest": "1.1.0"
       },
       "versions": {
         "1.0.0": {
@@ -77,6 +77,22 @@
             },
             "evantanner.message-logger": {
               "version": ">=1.6 <2"
+            }
+          }
+        },
+        "1.1.0": {
+          "url": "https://evantannermeta.github.io/Evan-Plugins/pool/evantanner.ghost-ping-notifications@1.1.0.zip",
+          "sha256": "9dd0f0606e4b5cc84a303d5db6a88cc7412f75fa5a9dfae74f7945d79089c75b",
+          "size": 9327,
+          "dependencies": {
+            "revenge.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            },
+            "evantanner.message-logger": {
+              "version": ">=1.7 <2"
             }
           }
         }
