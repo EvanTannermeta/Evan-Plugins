@@ -27,11 +27,11 @@ const DEFAULT_URL =
 	'https://evantannermeta.github.io/revenge-next-bundle/revenge.bundle'
 
 const INTERVALS = [
-	{ label: '10 seconds', sec: 10 },
-	{ label: '25 seconds', sec: 25 },
-	{ label: '50 seconds', sec: 50 },
 	{ label: '1 minute', sec: 60 },
 	{ label: '2 minutes', sec: 120 },
+	{ label: '5 minutes', sec: 300 },
+	{ label: '15 minutes', sec: 900 },
+	{ label: '30 minutes', sec: 1800 },
 ]
 
 interface Settings {
@@ -46,6 +46,14 @@ const DEFAULTS: Settings = {
 	customUrl: '',
 }
 
+/** Fills in defaults. An interval that is no longer offered (the old 10, 25 and 50 second ones) falls back to the default. */
+function readSettings(raw?: Partial<Settings> | null): Settings {
+	const s = { ...DEFAULTS, ...(raw ?? {}) }
+	if (!INTERVALS.some(i => i.sec === s.intervalSec))
+		s.intervalSec = DEFAULTS.intervalSec
+	return s
+}
+
 const effectiveUrl = (s: Settings) =>
 	s.useCustomUrl && s.customUrl.trim() ? s.customUrl.trim() : DEFAULT_URL
 
@@ -57,16 +65,15 @@ const effectiveUrl = (s: Settings) =>
 async function fetchVersionId(url: string): Promise<string | null> {
 	const sep = url.includes('?') ? '&' : '?'
 	try {
-		log('HEAD request ->', url)
 		const res = await fetch(`${url}${sep}t=${Date.now()}`, {
 			method: 'HEAD',
 			headers: { 'Cache-Control': 'no-cache' },
 		})
-		log('HEAD response status:', res.status)
-		if (!res.ok) return null
-		const id = res.headers.get('etag') ?? res.headers.get('last-modified')
-		log('Version id (etag/last-modified):', String(id))
-		return id
+		if (!res.ok) {
+			log('HEAD request failed with status', res.status)
+			return null
+		}
+		return res.headers.get('etag') ?? res.headers.get('last-modified')
 	} catch (e) {
 		log('HEAD request failed (offline?):', String(e))
 		return null
@@ -95,7 +102,13 @@ function showUpdatePrompt(test: boolean, onNo: () => void) {
 						return
 					}
 					log('User chose Yes, reloading app')
-					reloadApp()
+					try {
+						reloadApp()
+					} catch (e) {
+						// Don't stay stuck "prompting" if the reload fails.
+						log('Reload failed:', String(e))
+						onNo()
+					}
 				},
 			},
 		],
@@ -120,7 +133,7 @@ export default plugin({
 	// Shown as the plugin's "Settings" page in Settings > Revenge > Plugins.
 	SettingsComponent({ api }) {
 		const storage = api.jsonStorage as unknown as JsonStorage<Settings>
-		const s: Settings = { ...DEFAULTS, ...(storage.use() ?? {}) }
+		const s = readSettings(storage.use())
 
 		return (
 			<Page>
@@ -173,48 +186,42 @@ export default plugin({
 
 	start({ cleanup, jsonStorage, logger: pluginLogger }) {
 		logger = pluginLogger
-		log('Step 1: plugin starting')
+		log('Starting')
 
 		const storage = jsonStorage as JsonStorage<Settings>
-		const getSettings = (): Settings => ({
-			...DEFAULTS,
-			...(storage.cache ?? {}),
-		})
-		log('Step 2: loaded settings', JSON.stringify(getSettings()))
+		const getSettings = () => readSettings(storage.cache)
+		log('Settings:', JSON.stringify(getSettings()))
 
 		// The loader already pulls the newest bundle on launch, so the first
 		// value we see this session is our baseline. Anything different later = update.
 		let known: string | null = null
 		let prompting = false
 		let checking = false
+		let offlineLogged = false
 		let timer: ReturnType<typeof setInterval> | undefined
 		let debounce: ReturnType<typeof setTimeout> | undefined
 		let lastUrl = effectiveUrl(getSettings())
 		let lastInterval = getSettings().intervalSec
 
 		const check = async () => {
-			if (checking || prompting) {
-				log('Check skipped (already checking or prompt open)')
-				return
-			}
+			if (checking || prompting) return
 			checking = true
 			try {
-				log('Step 3: checking for update')
 				const id = await fetchVersionId(effectiveUrl(getSettings()))
 				if (!id) {
-					log('No version id available, will retry next interval')
+					// Say so once, not on every retry while offline.
+					if (!offlineLogged) log('No version id available, will keep retrying')
+					offlineLogged = true
 					return
 				}
+				offlineLogged = false
 				if (known === null) {
 					known = id
-					log('Step 4: baseline set to', id)
+					log('Baseline set to', id)
 					return
 				}
-				if (id === known) {
-					log('Step 4: no change (still', `${id})`)
-					return
-				}
-				log('Step 4: CHANGE DETECTED', known, '->', id)
+				if (id === known) return
+				log('Update detected:', known, '->', id)
 				prompting = true
 				showUpdatePrompt(false, () => {
 					known = id // don't nag again until it changes again
@@ -255,7 +262,6 @@ export default plugin({
 			},
 		)
 
-		log('Step 3: first check now')
 		check()
 		schedule()
 	},
