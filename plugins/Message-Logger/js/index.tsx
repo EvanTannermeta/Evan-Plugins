@@ -25,6 +25,7 @@ declare module '@revenge-mod/modules/native' {
 		'evantanner.message-logger.deleteKept': [[messageId: string], string]
 		'evantanner.message-logger.deleteAllKept': [[], string]
 		'evantanner.message-logger.purgePending': [[hours: string], string]
+		'evantanner.message-logger.setKeptLimit': [[bytes: string], string]
 		'evantanner.message-logger.exportToDownloads': [
 			[fileName: string, mime: string, content: string],
 			string,
@@ -71,6 +72,12 @@ interface Settings {
 	/** Format used by the Copy and Share buttons. */
 	exportFormat: ExportFormat
 	maxLogged: number
+	/** Never log messages from bots. */
+	ignoreBots: boolean
+	/** JSON IgnoreList: servers, channels and people that are never logged. */
+	ignored: string
+	/** Most megabytes of saved files to keep on the device. 0 = no limit. */
+	maxKeptMB: number
 	/** JSON array of Entry, newest first. Stored as a string so clearing it is safe. */
 	entries: string
 }
@@ -94,6 +101,10 @@ interface Entry {
 	attachments: number
 	/** Saved attachment details, when "Save attachments" was on. */
 	files?: FileInfo[]
+	/** Where it was and who sent it, so the log can offer "Ignore" buttons. Older entries lack these. */
+	guildId?: string
+	channelId?: string
+	authorId?: string
 	deletedAt: number
 }
 
@@ -115,6 +126,9 @@ const DEFAULTS: Settings = {
 	preSaveFiles: false,
 	exportFormat: 'text',
 	maxLogged: 200,
+	ignoreBots: false,
+	ignored: '{"guilds":[],"channels":[],"users":[]}',
+	maxKeptMB: 500,
 	entries: '[]',
 }
 
@@ -126,6 +140,102 @@ function parseEntries(raw: string): Entry[] {
 		return []
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Ignore list: servers, channels and people that are never logged
+// ---------------------------------------------------------------------------
+
+interface IgnoreList {
+	guilds: string[]
+	channels: string[]
+	users: string[]
+}
+
+let ignoreCache: { raw: string; value: IgnoreList } | undefined
+
+function parseIgnore(raw: string): IgnoreList {
+	if (ignoreCache?.raw === raw) return ignoreCache.value
+	const ids = (v: unknown) =>
+		Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+	let value: IgnoreList = { guilds: [], channels: [], users: [] }
+	try {
+		const parsed = JSON.parse(raw)
+		value = {
+			guilds: ids(parsed?.guilds),
+			channels: ids(parsed?.channels),
+			users: ids(parsed?.users),
+		}
+	} catch {}
+	ignoreCache = { raw, value }
+	return value
+}
+
+/** True when a message must not be logged: its server, channel or author is ignored, or it is a bot. */
+function isIgnored(
+	s: Settings,
+	message: any,
+	channelId?: string,
+	guildId?: string,
+): boolean {
+	const list = parseIgnore(s.ignored)
+	if (guildId && list.guilds.includes(guildId)) return true
+	if (channelId && list.channels.includes(channelId)) return true
+	const author = message?.author
+	if (author?.id && list.users.includes(author.id)) return true
+	return !!(s.ignoreBots && author?.bot)
+}
+
+/** Servers you are in whose name contains the text. */
+function searchGuilds(query: string): { id: string; name: string }[] {
+	const q = query.trim().toLowerCase()
+	if (!q) return []
+	try {
+		const guilds: Record<string, any> =
+			(Stores as any).GuildStore?.getGuilds?.() ?? {}
+		return Object.values(guilds)
+			.filter(g =>
+				String(g?.name ?? '')
+					.toLowerCase()
+					.includes(q),
+			)
+			.map(g => ({ id: String(g.id), name: String(g.name) }))
+			.sort((a, b) => a.name.localeCompare(b.name))
+			.slice(0, 10)
+	} catch {
+		return []
+	}
+}
+
+/** A readable name for an ignored id, falling back to the id itself. */
+function nameOfIgnored(kind: keyof IgnoreList, id: string): string {
+	try {
+		const st = Stores as any
+		if (kind === 'guilds') return st.GuildStore?.getGuild?.(id)?.name ?? id
+		if (kind === 'channels') {
+			const channel = st.ChannelStore?.getChannel?.(id)
+			return channel?.name ? `#${channel.name}` : id
+		}
+		const user = st.UserStore?.getUser?.(id)
+		return user?.globalName ?? user?.username ?? id
+	} catch {
+		return id
+	}
+}
+
+const IGNORE_KIND_LABEL = {
+	guilds: 'Server',
+	channels: 'Channel',
+	users: 'User',
+} as const
+
+/** Choices for how much saved-file storage to use. */
+const KEPT_LIMITS = [
+	{ label: '100 MB', mb: 100 },
+	{ label: '250 MB', mb: 250 },
+	{ label: '500 MB', mb: 500 },
+	{ label: '1 GB', mb: 1024 },
+	{ label: 'No limit', mb: 0 },
+]
 
 // Discord stores colors as signed 32-bit ARGB ints.
 const RED = 0xff000000 | 0xed4245 | 0
@@ -190,6 +300,10 @@ const nativeDeleteAll = () =>
 const nativePurge = () =>
 	callNativeMethod('evantanner.message-logger.purgePending', [
 		String(PENDING_HOURS),
+	])
+const nativeSetLimit = (mb: number) =>
+	callNativeMethod('evantanner.message-logger.setKeptLimit', [
+		String(Math.max(0, Math.round(mb * 1024 * 1024))),
 	])
 const nativeExport = (name: string, mime: string, content: string) =>
 	callNativeMethod('evantanner.message-logger.exportToDownloads', [
@@ -305,6 +419,9 @@ function makeEntry(
 		content: String(message.content ?? '').slice(0, 1000),
 		attachments: message.attachments?.length ?? 0,
 		files: files.length ? files : undefined,
+		guildId,
+		channelId,
+		authorId: message.author?.id,
 		deletedAt: Date.now(),
 	}
 }
@@ -322,6 +439,9 @@ interface GhostEntry {
 	kind: string
 	how: 'deleted' | 'edited'
 	at: number
+	/** Where it happened, so other plugins can filter by server. */
+	guildId?: string
+	channelId?: string
 }
 
 interface TrackedPing {
@@ -475,6 +595,8 @@ function reportGhost(
 		kind: tracked.kind,
 		how,
 		at: Date.now(),
+		guildId: tracked.guildId ?? guildId,
+		channelId: tracked.channelId ?? channelId,
 	}
 	log('Ghost ping from', entry.author, `(${how})`)
 	ghostSink?.(entry)
@@ -699,6 +821,7 @@ export default plugin({
 			Stack,
 			Text,
 			TextInput,
+			TableRow,
 			TableRowGroup,
 			TableSwitchRow,
 		} = Design
@@ -708,6 +831,29 @@ export default plugin({
 		const ghosts = parseGhost(s.ghostLog)
 		const editRecords = parseEdits(s.editLog)
 		const [maxText, setMaxText] = useState(String(s.maxLogged))
+
+		const [serverQuery, setServerQuery] = useState('')
+		const serverResults = searchGuilds(serverQuery)
+		const ignore = parseIgnore(s.ignored)
+		const ignoreCount =
+			ignore.guilds.length + ignore.channels.length + ignore.users.length
+		const addIgnore = (kind: keyof IgnoreList, id: string) => {
+			if (ignore[kind].includes(id)) return
+			storage.set({
+				ignored: JSON.stringify({ ...ignore, [kind]: [...ignore[kind], id] }),
+			})
+		}
+		const removeIgnore = (kind: keyof IgnoreList, id: string) =>
+			storage.set({
+				ignored: JSON.stringify({
+					...ignore,
+					[kind]: ignore[kind].filter(x => x !== id),
+				}),
+			})
+		const setLimit = (mb: number) => {
+			storage.set({ maxKeptMB: mb })
+			void safe(() => nativeSetLimit(mb))
+		}
 
 		// What the native part has saved on this device. undefined = not loaded yet or unavailable.
 		const [kept, setKept] = useState<Record<string, string[]> | undefined>()
@@ -857,6 +1003,64 @@ export default plugin({
 					/>
 				</TableRowGroup>
 
+				<TableRowGroup title="Ignore list">
+					<TableSwitchRow
+						label="Ignore bots"
+						subLabel="Never log messages from bots"
+						value={s.ignoreBots}
+						onValueChange={(v: boolean) => storage.set({ ignoreBots: v })}
+					/>
+					<TextInput
+						label="Find a server to ignore"
+						size="md"
+						placeholder="Server name"
+						value={serverQuery}
+						onChange={(v: string) => setServerQuery(v)}
+					/>
+				</TableRowGroup>
+
+				{serverQuery.trim() && !serverResults.length ? (
+					<Text variant="text-sm/medium">No server with that name.</Text>
+				) : null}
+
+				{serverResults.length ? (
+					<TableRowGroup title="Matching servers">
+						{serverResults.map(g => (
+							<TableRow
+								key={g.id}
+								label={g.name}
+								subLabel={
+									ignore.guilds.includes(g.id)
+										? 'Already ignored'
+										: 'Tap to ignore'
+								}
+								onPress={() => addIgnore('guilds', g.id)}
+							/>
+						))}
+					</TableRowGroup>
+				) : null}
+
+				{ignoreCount ? (
+					<TableRowGroup title={`Ignored (${ignoreCount}), tap to remove`}>
+						{(['guilds', 'channels', 'users'] as const).flatMap(kind =>
+							ignore[kind].map(id => (
+								<TableRow
+									key={`${kind}-${id}`}
+									label={nameOfIgnored(kind, id)}
+									subLabel={`${IGNORE_KIND_LABEL[kind]} · ${id}`}
+									onPress={() => removeIgnore(kind, id)}
+								/>
+							)),
+						)}
+					</TableRowGroup>
+				) : (
+					<Text variant="text-sm/medium">
+						Ignored servers, channels and people aren't logged, and their
+						deleted messages disappear as normal. Ghost-ping alerts still work
+						there. Add them here, or from a saved message below.
+					</Text>
+				)}
+
 				<TableRowGroup title="Ghost pings">
 					<TableSwitchRow
 						label="Alert on ghost pings"
@@ -984,6 +1188,20 @@ export default plugin({
 					/>
 				</TableRowGroup>
 
+				<TableRowGroup title="Saved file limit">
+					{KEPT_LIMITS.map(l => (
+						<TableRow
+							key={l.mb}
+							label={`${s.maxKeptMB === l.mb ? '✓  ' : '     '}${l.label}`}
+							onPress={() => setLimit(l.mb)}
+						/>
+					))}
+				</TableRowGroup>
+				<Text variant="text-sm/medium">
+					When saved files go over the limit, the oldest ones are removed. The
+					log keeps their links.
+				</Text>
+
 				<Text variant="text-sm/medium">
 					{nativeOk
 						? `Saved files: ${formatSize(usage?.kept) || '0 B'} kept, ${formatSize(usage?.pending) || '0 B'} waiting`
@@ -1031,6 +1249,10 @@ export default plugin({
 							onPress={saveToDownloads}
 						/>
 					</Stack>
+					<Text variant="text-sm/medium">
+						Exports are plain text. Files in your Downloads folder can be read
+						by other apps.
+					</Text>
 				</Stack>
 
 				<Stack spacing={8}>
@@ -1075,6 +1297,32 @@ export default plugin({
 									{e.attachments} attachment(s), links weren't saved
 								</Text>
 							) : null}
+							<Stack spacing={8} direction="horizontal">
+								{e.guildId && !ignore.guilds.includes(e.guildId) ? (
+									<Button
+										size="sm"
+										variant="secondary"
+										text="Ignore server"
+										onPress={() => addIgnore('guilds', e.guildId as string)}
+									/>
+								) : null}
+								{e.channelId && !ignore.channels.includes(e.channelId) ? (
+									<Button
+										size="sm"
+										variant="secondary"
+										text="Ignore channel"
+										onPress={() => addIgnore('channels', e.channelId as string)}
+									/>
+								) : null}
+								{e.authorId && !ignore.users.includes(e.authorId) ? (
+									<Button
+										size="sm"
+										variant="secondary"
+										text="Ignore user"
+										onPress={() => addIgnore('users', e.authorId as string)}
+									/>
+								) : null}
+							</Stack>
 						</Stack>
 					</Card>
 				))}
@@ -1120,11 +1368,17 @@ export default plugin({
 			ghostListeners.clear()
 		})
 
-		const save = (entry: Entry) => {
+		// One write for any number of entries, so a bulk delete doesn't rewrite the log per message.
+		const saveMany = (batch: Entry[]) => {
+			if (!batch.length) return
 			const s = getSettings()
-			const next = [entry, ...parseEntries(s.entries)].slice(0, s.maxLogged)
+			const next = [...[...batch].reverse(), ...parseEntries(s.entries)].slice(
+				0,
+				s.maxLogged,
+			)
 			storage.set({ entries: JSON.stringify(next) })
 		}
+		const save = (entry: Entry) => saveMany([entry])
 
 		// Discord's dispatcher, found below. Used to make the chat redraw kept messages right away.
 		let dispatcher: any
@@ -1200,6 +1454,8 @@ export default plugin({
 						return payload
 					}
 					if (isOwn(message) && !s.logOwn) return payload
+					if (isIgnored(s, message, payload.channelId, payload.guildId))
+						return payload
 
 					const entry = makeEntry(
 						message,
@@ -1237,12 +1493,18 @@ export default plugin({
 
 					if (!s.enabled) return payload
 
+					// Messages we keep stay in chat. Everything else is deleted as normal.
 					const found = (payload.ids as string[])
 						.map(id => getCachedMessage(payload.channelId, id))
-						.filter(Boolean)
+						.filter(
+							(m: any) =>
+								m &&
+								(s.logOwn || !isOwn(m)) &&
+								!isIgnored(s, m, payload.channelId, payload.guildId),
+						)
 					if (!found.length) return payload
-					if (!s.logOwn && found.some(isOwn)) return payload
 
+					const batch: Entry[] = []
 					for (const message of found) {
 						deletedIds.add(message.id)
 						const entry = makeEntry(
@@ -1251,14 +1513,20 @@ export default plugin({
 							payload.guildId,
 							s.logAttachments || s.saveFilesToDevice,
 						)
-						save(entry)
+						batch.push(entry)
 						if (s.saveFilesToDevice && entry.files?.length) {
 							void keepFilesOnDevice(entry.id, entry.files, s.preSaveFiles)
 						}
 					}
+					saveMany(batch)
 					log(`Kept ${found.length} bulk-deleted message(s)`)
 					refresh(found, payload.channelId, payload.guildId)
-					return undefined
+
+					const keptIds = new Set(found.map((m: any) => m.id))
+					const rest = (payload.ids as string[]).filter(id => !keptIds.has(id))
+					if (!rest.length) return undefined // block the whole event
+					payload.ids = rest // the others are deleted as normal
+					return payload
 				} catch (e) {
 					log(
 						'MESSAGE_DELETE_BULK handler failed, letting it through:',
@@ -1323,15 +1591,25 @@ export default plugin({
 			edits.set(record.id, record)
 		}
 
+		// Edits arrive in bursts on busy servers, so the log is written at most once every 2 seconds.
+		let editSaveTimer: ReturnType<typeof setTimeout> | undefined
+		const writeEdits = () => {
+			editSaveTimer = undefined
+			storage.set({ editLog: JSON.stringify([...edits.values()].reverse()) })
+		}
 		const saveEdits = () => {
 			while (edits.size > MAX_EDIT_RECORDS) {
 				edits.delete(edits.keys().next().value as string)
 			}
-			storage.set({ editLog: JSON.stringify([...edits.values()].reverse()) })
+			editSaveTimer ??= setTimeout(writeEdits, 2000)
 		}
 
 		resetEdits = () => edits.clear()
 		cleanup(() => {
+			if (editSaveTimer) {
+				clearTimeout(editSaveTimer)
+				writeEdits()
+			}
 			resetEdits = undefined
 			edits.clear()
 		})
@@ -1347,6 +1625,8 @@ export default plugin({
 
 					const channelId = m.channel_id ?? m.channelId ?? payload.channelId
 					const guildId = payload.guildId ?? m.guild_id
+					const sender = m.author ? m : getCachedMessage(channelId, m.id)
+					if (isIgnored(s, sender, channelId, guildId)) return payload
 					const known = edits.get(m.id)
 
 					// Same text as last time (a link preview, a pin...): put the history back,
@@ -1430,6 +1710,15 @@ export default plugin({
 
 					const me = (Stores as any).UserStore?.getCurrentUser?.()?.id
 					if (!s.logOwn && message.author?.id === me) return payload
+					if (
+						isIgnored(
+							s,
+							message,
+							message.channel_id ?? payload.channelId,
+							payload.guildId ?? message.guild_id,
+						)
+					)
+						return payload
 
 					const files = collectFiles(message)
 					if (files.length)
@@ -1445,6 +1734,7 @@ export default plugin({
 			if (getSettings().preSaveFiles) void safe(nativePurge)
 		}
 		purge()
+		void safe(() => nativeSetLimit(getSettings().maxKeptMB))
 		const purgeTimer = setInterval(purge, 60 * 60 * 1000)
 		cleanup(() => clearInterval(purgeTimer))
 
