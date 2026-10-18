@@ -1,5 +1,5 @@
 {
-	"name": "@example/revenge-plugins",
+	"name": "evan-plugins",
 	"private": true,
 	"type": "module",
 	"scripts": {
@@ -9,7 +9,7 @@
 		"plan-releases": "revenge-plugin plan-releases",
 		"serve": "revenge-plugin serve",
 		"lint": "biome check",
-		"lint:types": "tsc --noEmit && tsc -p cli --noEmit"
+		"lint:types": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@revenge-mod/devtools-client": "^1.4.0",
