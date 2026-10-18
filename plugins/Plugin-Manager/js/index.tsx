@@ -1136,28 +1136,30 @@ function SettingsTab({ storage }: { storage: JsonStorage<Settings> }) {
  * instead of crashing.
  */
 function missingInternals(): string[] {
-	const things: Record<string, unknown> = {
-		pList,
-		pEmitter,
-		enablePluginInActiveSlot,
-		disablePluginInActiveSlot,
-		uninstallExternalPlugin,
-		installFromRepo,
-		listRepoPlugins,
-		listRepos,
-		listUpdates,
-		planInstall,
-		refreshAllRepos,
-		refreshRepo,
-		selectSafeUpdates,
-		setRepos,
-		updatePlugins,
-	}
+	// Written as pairs because the build turns imported names into property lookups,
+	// and those can't be used as shorthand properties in an object literal.
+	const things: [string, () => unknown][] = [
+		['pList', () => pList],
+		['pEmitter', () => pEmitter],
+		['enablePluginInActiveSlot', () => enablePluginInActiveSlot],
+		['disablePluginInActiveSlot', () => disablePluginInActiveSlot],
+		['uninstallExternalPlugin', () => uninstallExternalPlugin],
+		['installFromRepo', () => installFromRepo],
+		['listRepoPlugins', () => listRepoPlugins],
+		['listRepos', () => listRepos],
+		['listUpdates', () => listUpdates],
+		['planInstall', () => planInstall],
+		['refreshAllRepos', () => refreshAllRepos],
+		['refreshRepo', () => refreshRepo],
+		['selectSafeUpdates', () => selectSafeUpdates],
+		['setRepos', () => setRepos],
+		['updatePlugins', () => updatePlugins],
+	]
 
 	const missing: string[] = []
-	for (const name in things) {
+	for (const [name, get] of things) {
 		try {
-			if (things[name] == null) missing.push(name)
+			if (get() == null) missing.push(name)
 		} catch {
 			missing.push(name)
 		}
