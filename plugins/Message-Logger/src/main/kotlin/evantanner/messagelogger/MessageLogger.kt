@@ -33,6 +33,10 @@ import org.json.JSONObject
 
 private const val MAX_FILE_BYTES = 25L * 1024 * 1024
 private const val MAX_FILES_PER_MESSAGE = 10
+private const val MAX_REDIRECTS = 5
+
+/** Most bytes of kept files to hold on to. 0 means no limit. Set from JavaScript. */
+@Volatile private var keptLimitBytes = 0L
 
 private val ID_PATTERN = Regex("^[0-9]{1,30}$")
 
@@ -55,15 +59,40 @@ private fun isAllowedUrl(raw: String): Boolean =
         false
     }
 
+/**
+ * Opens the URL and follows redirects by hand, so every hop is checked against the
+ * allow-list. (Automatic redirects would let an allowed host send us anywhere.)
+ */
+private fun openChecked(startUrl: String): HttpURLConnection? {
+    var current = startUrl
+    var hops = 0
+    while (hops <= MAX_REDIRECTS) {
+        if (!isAllowedUrl(current)) return null
+
+        val connection = (URL(current).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            instanceFollowRedirects = false
+            requestMethod = "GET"
+        }
+
+        val code = connection.responseCode
+        if (code !in 300..399) return connection
+
+        val location = connection.getHeaderField("Location")
+        connection.disconnect()
+        if (location.isNullOrEmpty()) return null
+
+        current = URL(URL(current), location).toString()
+        hops++
+    }
+    return null
+}
+
 private fun download(url: String, dest: File, maxBytes: Long): Boolean {
     var connection: HttpURLConnection? = null
     return try {
-        connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 30_000
-            instanceFollowRedirects = true
-            requestMethod = "GET"
-        }
+        connection = openChecked(url) ?: return false
 
         if (connection.responseCode !in 200..299) return false
         if (connection.contentLengthLong > maxBytes) return false
@@ -115,6 +144,31 @@ private fun saveFiles(dir: File, files: JSONArray) {
 private fun dirSize(dir: File): Long =
     dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 
+/** Removes the oldest kept messages' files until everything fits in `maxBytes`. 0 means no limit. */
+private fun trimKept(root: File, maxBytes: Long) {
+    if (maxBytes <= 0) return
+
+    val dirs = File(root, "kept").listFiles()
+        ?.filter { it.isDirectory }
+        ?.sortedBy { it.lastModified() }
+        ?: return
+
+    var total = dirs.sumOf { dirSize(it) }
+    for (dir in dirs) {
+        if (total <= maxBytes) break
+        total -= dirSize(dir)
+        dir.deleteRecursively()
+    }
+}
+
+/** Removes half-finished downloads left behind by an interrupted run. */
+private fun cleanPartials(root: File) {
+    val cutoff = System.currentTimeMillis() - 60 * 60 * 1000
+    root.walkTopDown()
+        .filter { it.isFile && it.name.endsWith(".part") && it.lastModified() < cutoff }
+        .forEach { it.delete() }
+}
+
 private fun handleSave(root: File, messageId: String, filesJson: String, bucket: String): String {
     if (!ID_PATTERN.matches(messageId)) return "error: bad message id"
     if (bucket != "kept" && bucket != "pending") return "error: bad bucket"
@@ -130,6 +184,7 @@ private fun handleSave(root: File, messageId: String, filesJson: String, bucket:
         executor.execute {
             try {
                 saveFiles(dir, files)
+                if (bucket == "kept") trimKept(root, keptLimitBytes)
             } catch (e: Exception) {
                 // Best effort: a failed download just means no local copy.
             }
@@ -150,7 +205,14 @@ private fun handleKeep(root: File, messageId: String): String {
     if (!pending.isDirectory) return "missing"
 
     kept.parentFile?.mkdirs()
-    return if (pending.renameTo(kept)) "kept" else "missing"
+    if (!pending.renameTo(kept)) return "missing"
+
+    try {
+        executor.execute { trimKept(root, keptLimitBytes) }
+    } catch (e: Exception) {
+        // The next download or limit change trims instead.
+    }
+    return "kept"
 }
 
 /** JSON object of message id -> absolute paths of its kept copies. */
@@ -188,6 +250,7 @@ private fun handleDeleteAllKept(root: File): String {
 /** Removes pre-saved copies older than the given number of hours. */
 private fun handlePurgePending(root: File, hoursRaw: String): String {
     val hours = hoursRaw.toLongOrNull() ?: return "error: bad hours"
+    if (hours < 0) return "error: bad hours"
     val cutoff = System.currentTimeMillis() - hours * 60 * 60 * 1000
 
     var removed = 0
@@ -243,6 +306,12 @@ val messageLogger = plugin {
         val id = manifest.id
         val root = File(pluginDir, "attachments")
 
+        try {
+            executor.execute { cleanPartials(root) }
+        } catch (e: Exception) {
+            // Cleaning up is optional.
+        }
+
         registerNativeMethod("$id.save") { rawArgs ->
             val args = rawArgs.asDelegate()
             val messageId: String by args.string()
@@ -277,6 +346,19 @@ val messageLogger = plugin {
             val hours: String by args.string()
 
             handlePurgePending(root, hours)
+        }
+
+        registerNativeMethod("$id.setKeptLimit") { rawArgs ->
+            val args = rawArgs.asDelegate()
+            val bytes: String by args.string()
+
+            keptLimitBytes = bytes.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+            try {
+                executor.execute { trimKept(root, keptLimitBytes) }
+            } catch (e: Exception) {
+                // The next download trims instead.
+            }
+            "ok"
         }
 
         withAppActivity { activity ->
