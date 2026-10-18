@@ -3,8 +3,8 @@
 	"id": "evantanner.staff-tags",
 	"name": "Staff Tags",
 	"description": "Shows a tag next to the username of anyone with the Administrator permission. Tags can be customized per person.",
-	"author": "Evan Tanner",
-	"version": "1.3.1",
+	"author": "Evan Tanner (https://github.com/EvanTannermeta \"GitHub\")",
+	"version": "1.3.2",
 	"dependencies": {
 		"revenge.api": { "version": ">=1 <2" },
 		"discord": { "version": "*" }
