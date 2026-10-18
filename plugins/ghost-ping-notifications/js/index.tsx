@@ -232,9 +232,7 @@ export default plugin({
 						label="Hide details on the lock screen"
 						subLabel="Shows only “Ghost ping” until you unlock your phone"
 						value={s.hideOnLockScreen}
-						onValueChange={(v: boolean) =>
-							storage.set({ hideOnLockScreen: v })
-						}
+						onValueChange={(v: boolean) => storage.set({ hideOnLockScreen: v })}
 					/>
 				</TableRowGroup>
 
@@ -258,7 +256,9 @@ export default plugin({
 							<TableRow
 								key={g.id}
 								label={g.name}
-								subLabel={muted.includes(g.id) ? 'Already muted' : 'Tap to mute'}
+								subLabel={
+									muted.includes(g.id) ? 'Already muted' : 'Tap to mute'
+								}
 								onPress={() => {
 									if (!muted.includes(g.id)) setMuted([...muted, g.id])
 								}}

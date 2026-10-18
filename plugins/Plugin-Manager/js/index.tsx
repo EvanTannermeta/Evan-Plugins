@@ -47,13 +47,13 @@ import { Image, ScrollView, View } from 'react-native'
 import type { SettingsItem } from '@revenge-mod/discord/modules/settings'
 import type { JsonStorage } from '@revenge-mod/json-storage'
 import type { AnyPlugin } from '@revenge-mod/plugins/_'
-import type { ReactNode } from 'react'
 import type {
 	InstallPlan,
 	PluginUpdate,
 	Repo,
 	RepoPluginListing,
 } from '@revenge-mod/plugins/_/repositories'
+import type { ReactNode } from 'react'
 
 /* -------------------------------------------------------------------------- */
 /*  Helpers                                                                   */
