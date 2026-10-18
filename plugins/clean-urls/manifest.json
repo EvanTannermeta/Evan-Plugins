@@ -4,7 +4,7 @@
 	"name": "Clean URLs",
 	"description": "Removes tracking parameters from links you send and receive.",
 	"icon": "LinkIcon",
-	"author": "EvanTannermeta (https://github.com/EvanTannermeta \"GitHub\")",
+	"author": "Evan Tanner (https://github.com/EvanTannermeta \"GitHub\")",
 	"version": "1.0.0",
 	"dependencies": {
 		"revenge.api": {
