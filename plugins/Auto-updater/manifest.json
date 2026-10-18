@@ -3,8 +3,8 @@
 	"id": "EvanTanner.bundle-update-checker",
 	"name": "Bundle Update Checker",
 	"description": "Prompts you to restart when a new Revenge bundle is published.",
-	"author": "Evan Tanner",
-	"version": "1.0.4",
+	"author": "Evan Tanner (https://github.com/EvanTannermeta \"GitHub\")",
+	"version": "1.0.5",
 	"dependencies": {
 		"revenge.api": {
 			"version": ">=1 <2"
