@@ -14,6 +14,7 @@ import io.github.revenge.bridge.asDelegate
 import io.github.revenge.plugins.plugin
 import io.github.revenge.xposed.api.registerNativeMethod
 import org.json.JSONObject
+import java.lang.ref.WeakReference
 
 /**
  * Ghost Ping Notifications native side.
@@ -29,11 +30,26 @@ private const val ANDROID_13 = 33
 
 private var nextNotificationId = 4000
 
+/** The latest Discord activity. Weak, so this plugin never keeps a closed screen alive. */
+private var activityRef: WeakReference<Activity>? = null
+
 private fun notificationManager(context: Context): NotificationManager =
     context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
+private fun newBuilder(context: Context): Notification.Builder =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        Notification.Builder(context, CHANNEL_ID)
+    } else {
+        Notification.Builder(context)
+    }
+
 /** Shows a notification. Returns "shown", or "error: ...". */
-private fun showNotification(context: Context, title: String, body: String): String {
+private fun showNotification(
+    context: Context,
+    title: String,
+    body: String,
+    hideOnLockScreen: Boolean,
+): String {
     return try {
         val manager = notificationManager(context)
         if (!manager.areNotificationsEnabled()) {
@@ -50,11 +66,7 @@ private fun showNotification(context: Context, title: String, body: String): Str
             manager.createNotificationChannel(channel)
         }
 
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(context, CHANNEL_ID)
-        } else {
-            Notification.Builder(context)
-        }
+        val builder = newBuilder(context)
 
         builder
             .setSmallIcon(android.R.drawable.stat_notify_chat)
@@ -62,6 +74,18 @@ private fun showNotification(context: Context, title: String, body: String): Str
             .setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body))
             .setAutoCancel(true)
+
+        if (hideOnLockScreen) {
+            // On a locked screen Android shows this generic version instead of the real text.
+            val hidden = newBuilder(context)
+                .setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setContentTitle("Ghost ping")
+                .setContentText("Unlock your phone to see the details")
+                .build()
+            builder
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
+                .setPublicVersion(hidden)
+        }
 
         // Tapping the notification opens Discord.
         val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
@@ -113,19 +137,24 @@ val ghostPingNotifications = plugin {
         val id = manifest.id
 
         withAppActivity { activity ->
+            activityRef = WeakReference(activity)
             val context = activity.applicationContext
 
             registerNativeMethod("$id.notify") { rawArgs ->
                 val args = rawArgs.asDelegate()
                 val title: String by args.string()
                 val body: String by args.string()
+                val hideOnLockScreen: String by args.string()
 
-                showNotification(context, title, body)
+                showNotification(context, title, body, hideOnLockScreen == "1")
             }
 
             registerNativeMethod("$id.status") { _ -> status(context) }
 
-            registerNativeMethod("$id.requestPermission") { _ -> requestPermission(activity) }
+            registerNativeMethod("$id.requestPermission") { _ ->
+                val current = activityRef?.get()
+                if (current != null) requestPermission(current) else "error: Discord is not open"
+            }
         }
     }
 
