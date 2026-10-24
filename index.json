@@ -58,7 +58,7 @@
       "author": "Evan Tanner (https://github.com/EvanTannermeta \"GitHub\")",
       "icon": "BellIcon",
       "channels": {
-        "latest": "1.1.0"
+        "latest": "1.1.1"
       },
       "versions": {
         "1.0.0": {
@@ -100,6 +100,22 @@
           "dependencies": {
             "revenge.api": {
               "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            },
+            "evantanner.message-logger": {
+              "version": ">=1.7 <2"
+            }
+          }
+        },
+        "1.1.1": {
+          "url": "https://evantannermeta.github.io/Evan-Plugins/pool/evantanner.ghost-ping-notifications@1.1.1.zip",
+          "sha256": "14687de377095e7ad83d5d09ee85d0f6f2583aa2a4d23a85c2b0a44dddedf483",
+          "size": 9329,
+          "dependencies": {
+            "revenge.api": {
+              "version": ">=1.2.1 <2"
             },
             "discord": {
               "version": "*"
